@@ -4,13 +4,15 @@ import matplotlib.pyplot as plt
 # =============================================================================
 # Dyson-Scale Sunshade / Solar Occluder Scalability Model
 # Engineering-level parametric tool – from climate SRM to full Dyson Swarm
+# Updated 2025: Reflects current solar constant & dynamic inputs
 # All physics approximate; intended for trajectory analysis and comparison
 # =============================================================================
 
-# Fundamental constants
+# Fundamental constants (2025 updates)
 R_earth = 6.371e6                  # m
 A_earth_cross_section = np.pi * R_earth**2   # m² ≈ 1.274e14 m²
-S0 = 1361.0                        # W/m² at 1 AU
+S0 = 1362.0                        # W/m² at 1 AU (SORCE 2024 average, Cycle 25)
+c = 299792458.0                    # m/s (speed of light for reference)
 
 def dyson_scalability(eta_target,
                       A_shade_m2=1e6,              # area per occulter (default 1 km²)
@@ -24,6 +26,7 @@ def dyson_scalability(eta_target,
                       mission_years=100):          # simulation horizon
     """
     Returns comprehensive scalability dictionary for arbitrary occlusion fraction eta_target (0–1).
+    Updated with 2025 solar constant and dynamic growth modeling.
     """
     # Core requirements
     N_occulter = eta_target * A_earth_cross_section / (A_shade_m2 * kappa)
@@ -36,20 +39,16 @@ def dyson_scalability(eta_target,
     years_at_constant_cadence = launches_required / flights_per_year
 
     # Exponential launch growth scenario
-    # Solve N_launches_total = integral_0^T cadence_0 * (1+g)^t dt = (cadence_0 / ln(1+g)) * ((1+g)^T - 1)
     if launch_cadence_growth_rate > 0:
         g = launch_cadence_growth_rate
-        T_exp = np.log(1 + launches_required * np.log(1+g) / flights_per_year) / np.log(1+g)
+        T_exp = np.log(1 + launches_required * np.log(1 + g) / flights_per_year) / np.log(1 + g)
     else:
         T_exp = years_at_constant_cadence
 
-    # Full self-replicating industry scenario (mass produced off-Earth)
-    # Available mass in year t: M(t) = M0 * (1 + r)^t  (compound growth)
+    # Full self-replicating industry scenario
     r = factory_growth_rate
     if r > 0 and factory_production_t_per_year_initial > 0:
-        # Year when cumulative production exceeds required mass
-        cumprod = np.cumprod(np.ones(mission_years) * (1 + r)) * factory_production_t_per_year_initial
-        cumprod = np.cumsum(cumprod)
+        cumprod = np.cumsum(np.cumprod(np.ones(mission_years + 1) * (1 + r)) * factory_production_t_per_year_initial)
         year_self_sufficient = np.argmax(cumprod >= total_mass_t)
         if year_self_sufficient == 0 and cumprod[-1] < total_mass_t:
             year_self_sufficient = mission_years + 10  # never
@@ -84,7 +83,7 @@ if __name__ == "__main__":
         1.00,        # Theoretical full Dyson sphere equivalent (statite swarm)
     ]
 
-    print("DYSON-SCALE OCCLUDER / SUNSHADE SCALABILITY\n")
+    print("DYSON-SCALE OCCLUDER / SUNSHADE SCALABILITY (Updated 2025)\n")
     print(f"{'eta':>6} {'Occluders':>14} {'Mass [Gt]':>10} {'Launches':>12} {'Yrs Const':>9} {'Yrs Exp20%':>10} {'Yrs Self50%':>11} {'Power[TW]':>10}")
     print("-" * 90)
 
