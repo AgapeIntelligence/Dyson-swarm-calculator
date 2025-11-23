@@ -24,7 +24,7 @@ class PowerOption:
     def __init__(self, type='p-B11', mass_reduction=0.075):
         """Power option with mass reduction (e.g., 7.5% for p-B11 fusion)."""
         self.type = type
-        self.mass_reduction = mass_reduction
+        self.mass_reduction = mass_reduction  # 5-10% reduction, default 7.5%
 
     def optimize_mass(self, base_mass):
         """Reduces base mass by mass_reduction factor."""
@@ -32,7 +32,7 @@ class PowerOption:
 
 def hybrid_power(au, solar_area_km2=1, fusion_kw=50, factor=0.7):
     """Calculates hybrid power (solar + p-B11 fusion) in kW."""
-    solar = 1362 / au**2 * solar_area_km2 * 1e6 * 0.2  # W, 20% efficiency (updated S0)
+    solar = 1362 / au**2 * solar_area_km2 * 1e6 * 0.2  # W, 20% efficiency (updated S0 2025)
     return (solar / 1000 + fusion_kw) * factor  # kW
 
 def optimize_reflector_bruteforce(R_target, candidates, max_layers=None, power_opt=None):
@@ -117,4 +117,19 @@ if __name__ == "__main__":
     targets = [0.90, 0.95, 0.98, 0.995]
     power_opt = PowerOption()
 
-    print("Multi-Layer Reflector Optimization Results (​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
+    print("Multi-Layer Reflector Optimization Results (Updated 2025 w/ p-B11 Fusion)\n")
+    print("="*70)
+    for R_t in targets:
+        print(f"\nTarget reflectivity: {R_t:.3f}")
+        sol = optimize_reflector_bruteforce(R_t, candidates, power_opt=power_opt)
+        if sol:
+            print(f"   Min areal mass    : {sol['total_areal_mass_kg_m2']*1000:6.3f} g/m²")
+            print(f"   Achieved R        : {sol['achieved_reflectivity']:.5f}")
+            print(f"   Layers used       : {sol['layers_used']}")
+            print(f"   Power option      : {sol['power_option']}")
+            print("   Composition       :", end="")
+            for r, m in sol['selected_layers']:
+                print(f" ({r:.2f}, {m*1000:.1f}g)", end="")
+            print()
+        else:
+            print("   Impossible with available layers")
