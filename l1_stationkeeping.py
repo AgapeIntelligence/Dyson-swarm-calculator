@@ -2,7 +2,7 @@ import numpy as np
 
 # =============================================================================
 # L1 Sunshade Station-Keeping & Propellant Estimator (Engineering Order-of-Magnitude)
-# Updated 2025: Integrates fusion thrust for L1 halo orbits
+# Updated 2025: Integrates fusion thrust, optimized L1 halo orbits, and beamed microwave power
 # Physics are approximate – suitable for system-level comparison only
 # =============================================================================
 
@@ -26,6 +26,26 @@ def fusion_thrust(mass_kg, delta_v_mps):
     fuel_mass = energy_req / 1e8  # kg, 10⁸ J/kg fusion energy density
     return fuel_mass
 
+def optimize_l1_thrust(mass_kg, power_kw, au_distance, delta_v_target_mps=75.0, isp_s=1e6):
+    """Optimizes fuel mass for L1 halo station-keeping."""
+    thrust_n = power_kw * 0.1  # 1 kW → 0.1 N (fusion/ion hybrid)
+    acceleration_m_s2 = thrust_n / mass_kg if mass_kg > 0 else 0
+    time_sec = delta_v_target_mps / acceleration_m_s2 if acceleration_m_s2 > 0 else 0
+
+    if isp_s > 0 and delta_v_target_mps > 0:
+        mass_ratio = np.exp(delta_v_target_mps / (isp_s * g0))
+        fuel_mass_kg = mass_kg * (mass_ratio - 1)
+    else:
+        fuel_mass_kg = 0.0
+
+    return {
+        "thrust_n": thrust_n,
+        "acceleration_m_s2": acceleration_m_s2,
+        "time_sec": time_sec,
+        "fuel_mass_kg": fuel_mass_kg,
+        "delta_v_mps": delta_v_target_mps
+    }
+
 def l1_stationkeeping(A_m2,
                       areal_density_kgpm2=0.001,
                       reflectivity=0.95,
@@ -33,9 +53,12 @@ def l1_stationkeeping(A_m2,
                       isp_sec=300.0,            # baseline (chemical); fusion uses 1e6 s
                       lifetime_yr=10.0,
                       safety_margin=2.0,
-                      delta_v_mps=75.0):        # Optimized L1 halo Δv [m/s/year]
+                      delta_v_mps=75.0,         # Optimized L1 halo Δv [m/s/year]
+                      beamed_microwave_enabled=False,
+                      microwave_power_kw=0.0,
+                      au_distance=1.0):
     """
-    Returns dictionary with engineering estimates, updated with fusion thrust.
+    Returns dictionary with engineering estimates, updated with fusion thrust and beamed power.
     """
     mass_dry_kg = areal_density_kgpm2 * A_m2
 
@@ -47,17 +70,19 @@ def l1_stationkeeping(A_m2,
     t_sec = lifetime_yr * 365.25 * 24 * 3600
     delta_v_eq = a * t_sec if a > 0 else 0         # equivalent total Δv [m/s]
 
-    # Propellant mass using Tsiolkovsky or fusion thrust
-    if isp_sec == 1e6:  # Fusion case
-        m_prop_kg = fusion_thrust(mass_dry_kg, delta_v_mps) * lifetime_yr
-    else:  # Chemical/Ion case
-        if delta_v_eq > 0:
-            exp_term = np.exp(-delta_v_eq / (g0 * isp_sec))
-            m_prop_kg = mass_dry_kg * (1.0 - exp_term)
-        else:
-            m_prop_kg = 0.0
+    # Total power for thrust (fusion + microwave)
+    total_power_kw = (50.0 if isp_sec == 1e6 else 0) + microwave_power_kw if beamed_microwave_enabled else (50.0 if isp_sec == 1e6 else 0)
+    thrust_data = optimize_l1_thrust(mass_dry_kg, total_power_kw, au_distance, delta_v_mps, isp_sec)
+    fuel_mass_kg = thrust_data["fuel_mass_kg"] * lifetime_yr if isp_sec == 1e6 else 0.0
 
-    propellant_fraction = m_prop_kg / mass_dry_kg if mass_dry_kg > 0 else 0.0
+    # Fallback to Tsiolkovsky for non-fusion cases
+    if isp_sec != 1e6 and delta_v_eq > 0:
+        exp_term = np.exp(-delta_v_eq / (g0 * isp_sec))
+        fuel_mass_kg = mass_dry_kg * (1.0 - exp_term)
+    else:
+        fuel_mass_kg = thrust_data["fuel_mass_kg"] * lifetime_yr if isp_sec == 1e6 else fuel_mass_kg
+
+    propellant_fraction = fuel_mass_kg / mass_dry_kg if mass_dry_kg > 0 else 0.0
 
     return {
         "area_m2": A_m2,
@@ -70,9 +95,12 @@ def l1_stationkeeping(A_m2,
         "lifetime_years": lifetime_yr,
         "equivalent_delta_v_m_s": delta_v_eq,
         "isp_s": isp_sec,
-        "propellant_kg": m_prop_kg,
+        "propellant_kg": fuel_mass_kg,
         "propellant_fraction": propellant_fraction,
-        "total_wet_mass_kg": mass_dry_kg + m_prop_kg
+        "total_wet_mass_kg": mass_dry_kg + fuel_mass_kg,
+        "beamed_microwave_enabled": beamed_microwave_enabled,
+        "microwave_power_kw": microwave_power_kw,
+        "optimized_thrust_data": thrust_data
     }
 
 # =============================================================================
@@ -81,9 +109,9 @@ def l1_stationkeeping(A_m2,
 if __name__ == "__main__":
     cases = [
         {"A_m2": 1e6, "rho": 0.001, "R": 0.95, "isp": 300,   "yr": 10, "name": "1 km² film, chemical 10 yr"},
-        {"A_m2": 1e6, "rho": 0.001, "R": 0.95, "isp": 1e6,   "yr": 10, "name": "1 km² film, fusion 10 yr"},
-        {"A_m2": 1e6, "rho": 0.0001,"R": 0.95, "isp": 1e6,  "yr": 50, "name": "100 mg/m² graphene, fusion 50 yr"},
-        {"A_m2": 100e6,"rho": 0.001, "R": 0.90, "isp": 1e6, "yr": 20, "name": "100 km² sail, fusion 20 yr"},
+        {"A_m2": 1e6, "rho": 0.001, "R": 0.95, "isp": 1e6,   "yr": 10, "name": "1 km² film, fusion 10 yr", "mw_enabled": False, "au": 1.0},
+        {"A_m2": 1e6, "rho": 0.0001,"R": 0.95, "isp": 1e6,  "yr": 50, "name": "100 mg/m² graphene, fusion 50 yr", "mw_enabled": True, "au": 10.0, "mw_kw": 900},
+        {"A_m2": 100e6,"rho": 0.001, "R": 0.90, "isp": 1e6, "yr": 20, "name": "100 km² sail, fusion 20 yr", "mw_enabled": False, "au": 1.0},
     ]
 
     print("L1 Sunshade Station-Keeping Estimates (Updated 2025)\n")
@@ -93,7 +121,10 @@ if __name__ == "__main__":
                                 reflectivity=case["R"],
                                 isp_sec=case["isp"],
                                 lifetime_yr=case["yr"],
-                                delta_v_mps=75.0)
+                                delta_v_mps=75.0,
+                                beamed_microwave_enabled=case.get("mw_enabled", False),
+                                microwave_power_kw=case.get("mw_kw", 0.0),
+                                au_distance=case.get("au", 1.0))
         print(f"─ {case['name']}")
         print(f"   Dry mass           : {res['dry_mass_kg']:8.1f} kg")
         print(f"   SRP force (raw)    : {res['srp_force_N']*1e3:6.2f} mN")
@@ -101,4 +132,4 @@ if __name__ == "__main__":
         print(f"   Eq. Δv             : {res['equivalent_delta_v_m_s']:6.1f} m/s")
         print(f"   Propellant mass    : {res['propellant_kg']:8.1f} kg ({res['propellant_fraction']:.1%})")
         print(f"   Total wet mass     : {res['total_wet_mass_kg']:8.1f} kg")
-        print()
+        print(f"   Microwave power    : {res​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
