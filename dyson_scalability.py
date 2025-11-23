@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 
 # =============================================================================
 # Dyson-Scale Sunshade / Solar Occluder Scalability Model
-# Updated 2025: Optimized L1 halo thrust with hybrid solar-fusion, von Neumann,
-# LFTR, thorium breeding, and antimatter drives
+# Updated 2025: Includes von Neumann probes, LFTR, thorium breeding, antimatter,
+# p-B11 fusion, hybrid solar-fusion, L1 halo thrust, and beamed microwave power
 # All physics approximate; intended for trajectory analysis and comparison
 # =============================================================================
 
@@ -16,17 +16,11 @@ c = 299792458.0                    # m/s
 G0 = 9.80665                       # m/s² (standard gravity)
 
 def optimize_l1_thrust(mass_kg, power_kw, au_distance, delta_v_target_mps=75.0, isp_s=1e6):
-    """
-    Optimizes fuel mass for L1 halo station-keeping using hybrid power.
-    delta_v_target_mps: Annual Δv (optimized to ~75 m/s/year per Science.gov).
-    isp_s: Fusion-specific impulse (10⁶ s for p-B11).
-    """
-    # Power-based thrust scaling (assuming 1 kW → 0.1 N for ion/fusion hybrid)
-    thrust_n = power_kw * 0.1  # Approximate thrust from power (adjustable)
+    """Optimizes fuel mass for L1 halo station-keeping."""
+    thrust_n = power_kw * 0.1  # 1 kW → 0.1 N (fusion/ion hybrid)
     acceleration_m_s2 = thrust_n / mass_kg if mass_kg > 0 else 0
     time_sec = delta_v_target_mps / acceleration_m_s2 if acceleration_m_s2 > 0 else 0
 
-    # Tsiolkovsky for fuel mass
     if isp_s > 0 and delta_v_target_mps > 0:
         mass_ratio = np.exp(delta_v_target_mps / (isp_s * G0))
         fuel_mass_kg = mass_kg * (mass_ratio - 1)
@@ -65,10 +59,12 @@ def dyson_scalability(eta_target,
                       antimatter_mass_mg_per_probe=10.0,  # mg per probe
                       fusion_power_kw=50.0,        # p-B11 baseline power
                       au_distance=1.0,             # Distance from Sun in AU
-                      l1_halo_delta_v_mps=75.0):   # Optimized annual Δv for L1 halo
+                      l1_halo_delta_v_mps=75.0,    # Optimized annual Δv for L1 halo
+                      beamed_microwave_enabled=False,
+                      microwave_power_kw_per_km2=1000.0):  # kW/km² at 1 AU
     """
-    Returns scalability with optimized L1 halo thrust using hybrid solar-fusion.
-    l1_halo_delta_v_mps: Optimized to ~75 m/s/year for minimal fuel.
+    Returns scalability with optimized L1 halo thrust and beamed microwave power.
+    au_distance: Adjusts solar/microwave power (fusion dominates >5 AU).
     """
     # Core requirements (L1 phase)
     N_occulter = eta_target * A_earth_cross_section / (A_shade_m2 * kappa)
@@ -123,4 +119,86 @@ def dyson_scalability(eta_target,
     if lftr_enabled and thorium_breeding_ratio > 1:
         thorium_mass_t = (total_mass_t * thorium_concentration_ppm / 1e6)
         fuel_doubling_years = np.log(2) / np.log(thorium_breeding_ratio)
-        cumulative_f​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
+        cumulative_fuel_t = thorium_mass_t * (1 + thorium_breeding_ratio) ** (mission_years / fuel_doubling_years)
+        if cumulative_fuel_t > thorium_mass_t:
+            year_self_sufficient = min(year_self_sufficient, mission_years // fuel_doubling_years)
+
+    # Antimatter drives (if enabled)
+    total_antimatter_mass_t = 0
+    if antimatter_enabled:
+        total_antimatter_mass_t = N_probes[-1] * antimatter_mass_mg_per_probe / 1e6
+        total_mass_t += total_antimatter_mass_t
+
+    # Hybrid solar-fusion power with beamed microwave
+    solar_irradiance_w_m2 = S0 / (au_distance ** 2)
+    solar_power_kw = (solar_irradiance_w_m2 * A_shade_m2 / 1e3) if solar_irradiance_w_m2 > 50 else 0
+    fusion_dominance_factor = 1.0 if au_distance <= 5.0 else (au_distance - 5.0) / 5.0 if au_distance <= 10.0 else 1.0
+    microwave_power_kw = (microwave_power_kw_per_km2 * (A_shade_m2 / 1e6) * (1 / au_distance**2)) if beamed_microwave_enabled else 0
+    total_power_kw = (fusion_power_kw * fusion_dominance_factor) + solar_power_kw + microwave_power_kw
+    power_per_occulter_kw = total_power_kw / N_occulter if N_occulter > 0 else 0
+
+    # L1 halo orbit thrust (optimized)
+    thrust_data = optimize_l1_thrust(mass_per_occulter_kg, power_per_occulter_kw, au_distance, l1_halo_delta_v_mps)
+    total_fuel_mass_t = (thrust_data["fuel_mass_kg"] * N_occulter) / 1e6
+    total_mass_t += total_fuel_mass_t
+
+    # Beamed microwave mass penalty
+    rectenna_mass_t = 0
+    if beamed_microwave_enabled:
+        rectenna_mass_t = (A_shade_m2 / 1e6) * 0.0005 * N_occulter / 1000  # 0.5 kg/m²
+        total_mass_t += rectenna_mass_t
+
+    power_blocked_TW = eta_target * S0 * A_earth_cross_section / 1e12
+
+    return {
+        "eta_target": eta_target,
+        "N_occulter": N_occulter,
+        "total_area_km2": total_area_km2,
+        "total_mass_t": total_mass_t,
+        "mass_per_occulter_kg": mass_per_occulter_kg,
+        "launches_required": launches_required,
+        "years_constant_cadence": years_at_constant_cadence,
+        "years_exponential_launches_20pct": T_exp,
+        "years_self_replicating_50pct": year_self_sufficient if year_self_sufficient <= mission_years else np.inf,
+        "power_blocked_TW": power_blocked_TW,
+        "von_neumann_enabled": von_neumann_enabled,
+        "N_probes_final": N_probes[-1] if von_neumann_enabled else 0,
+        "extra_occulters_from_vn": extra_occulters if von_neumann_enabled else 0,
+        "lftr_enabled": lftr_enabled,
+        "lftr_power_kw": lftr_power_kw,
+        "propellant_savings_t": propellant_savings_t,
+        "thorium_breeding_ratio": thorium_breeding_ratio,
+        "year_fuel_self_sufficiency": year_self_sufficient if lftr_enabled and thorium_breeding_ratio > 1 else np.inf,
+        "antimatter_enabled": antimatter_enabled,
+        "antimatter_mass_t": total_antimatter_mass_t,
+        "fusion_power_kw": fusion_power_kw,
+        "solar_power_kw": solar_power_kw,
+        "microwave_power_kw": microwave_power_kw,
+        "hybrid_power_factor": fusion_dominance_factor,
+        "power_per_occulter_kw": power_per_occulter_kw,
+        "l1_halo_fuel_mass_t": total_fuel_mass_t,
+        "beamed_microwave_enabled": beamed_microwave_enabled,
+        "rectenna_mass_t": rectenna_mass_t,
+        "thrust_data": thrust_data,
+    }
+
+# =============================================================================
+# Example: From climate SRM to full Dyson Swarm with all options
+# =============================================================================
+if __name__ == "__main__":
+    targets = [0.018, 0.10, 0.30, 0.50, 0.99, 1.00]
+
+    print("DYSON-SCALE OCCLUDER / SUNSHADE SCALABILITY (Updated 2025 w/ Microwave)\n")
+    print(f"{'eta':>6} {'Occluders':>14} {'Mass [Gt]':>10} {'Launches':>12} {'Yrs Const':>9} "
+          f"{'Yrs Exp20%':>10} {'Yrs Self50%':>11} {'Power[TW]':>10} {'Extra Occ':>12} "
+          f"{'LFTR Pwr [MW]':>13} {'Prop Sav [t]':>12} {'Fusion Pwr [kW]':>13} {'AM Mass [t]':>12} "
+          f"{'L1 Fuel [t]':>11} {'Mic Pwr [kW]':>12} {'Rect Mass [t]':>12}")
+    print("-" * 190)
+
+    for eta in targets:
+        au_dist = 1.0 if eta <= 0.5 else 10.0  # Inner at 1 AU, outer at 10 AU
+        res = dyson_scalability(eta,
+                                A_shade_m2=1e6,
+                                areal_density_kgpm2=0.0005,  # optimistic 0.5 g/m²
+                                payload_to_l1_t=50,
+                                flights_per_year​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
