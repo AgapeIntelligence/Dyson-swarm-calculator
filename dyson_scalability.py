@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 # =============================================================================
 # Dyson-Scale Sunshade / Solar Occluder Scalability Model
 # Updated 2025: Includes von Neumann probes, LFTR, thorium breeding, antimatter drives,
-# p-B11 fusion, and hybrid solar-fusion power
+# p-B11 fusion, hybrid solar-fusion, and L1 halo thrust model
 # All physics approximate; intended for trajectory analysis and comparison
 # =============================================================================
 
@@ -14,10 +14,16 @@ A_earth_cross_section = np.pi * R_earth**2   # m² ≈ 1.274e14 m²
 S0 = 1362.0                        # W/m² at 1 AU (SORCE 2024 average, Cycle 25)
 c = 299792458.0                    # m/s
 
+def fusion_thrust(mass_kg, delta_v_mps):
+    """Calculates fuel mass for fusion thrust (per post 1992421703314771975)."""
+    energy_req = 0.5 * mass_kg * delta_v_mps**2  # Kinetic energy [J]
+    fuel_mass_kg = energy_req / 1e8  # kg, assuming 10⁸ J/kg fusion energy density
+    return fuel_mass_kg
+
 def dyson_scalability(eta_target,
                       A_shade_m2=1e6,              # area per occulter (default 1 km²)
-                      kappa=0.95,                  # optical effectiveness (reflectivity/transparency)
-                      areal_density_kgpm2=0.001,   # kg/m² (1 g/m² baseline ultralight film)
+                      kappa=0.95,                  # optical effectiveness
+                      areal_density_kgpm2=0.001,   # kg/m² (1 g/m² baseline)
                       payload_to_l1_t=50.0,        # effective delivered mass per launch to L1
                       flights_per_year=20.0,       # initial launch cadence
                       launch_cadence_growth_rate=0.20,  # 20%/yr exponential growth
@@ -37,12 +43,12 @@ def dyson_scalability(eta_target,
                       antimatter_enabled=False,    # toggle antimatter drives
                       antimatter_mass_mg_per_probe=10.0,  # mg per probe
                       fusion_power_kw=50.0,        # p-B11 baseline power
-                      hybrid_power_factor=1.0,     # Adjusts for AU distance (1.0 at 1 AU, 0.7 at 10 AU)
-                      au_distance=1.0):            # Distance from Sun in AU
+                      au_distance=1.0,             # Distance from Sun in AU
+                      l1_halo_delta_v_mps=100.0):  # Typical L1 halo orbit Δv [m/s]
     """
-    Returns scalability with von Neumann probes, LFTR, thorium breeding, antimatter,
-    p-B11 fusion, and hybrid solar-fusion power.
-    au_distance: Adjusts solar power contribution (e.g., 0.7 at 10 AU).
+    Returns scalability with hybrid solar-fusion, L1 halo thrust, and all prior features.
+    au_distance: Adjusts solar power (fusion dominates >5 AU where irradiance <50 W/m²).
+    l1_halo_delta_v_mps: Δv for station-keeping (adjusts fusion thrust needs).
     """
     # Core requirements (L1 phase)
     N_occulter = eta_target * A_earth_cross_section / (A_shade_m2 * kappa)
@@ -89,14 +95,14 @@ def dyson_scalability(eta_target,
         total_lftr_mass_t = lftr_mass_t * np.ceil(N_occulter / 1000)  # 1 LFTR per 1000 occulters
         lftr_power_mw = total_lftr_mass_t * lftr_power_mw_per_ton
         lftr_power_kw = lftr_power_mw * 1000
-        waste_heat_power_kw = lftr_power_kw * (1 - waste_heat_propulsion_eff)  # Remaining heat
-        propellant_savings_t = total_mass_t * 0.5 * (waste_heat_power_kw / 500)  # Scaled to 500 kW hub
+        waste_heat_power_kw = lftr_power_kw * (1 - waste_heat_propulsion_eff)
+        propellant_savings_t = total_mass_t * 0.5 * (waste_heat_power_kw / 500)
         total_mass_t += total_lftr_mass_t - propellant_savings_t
 
     # Thorium breeding impact
     if lftr_enabled and thorium_breeding_ratio > 1:
         thorium_mass_t = (total_mass_t * thorium_concentration_ppm / 1e6)
-        fuel_doubling_years = np.log(2) / np.log(thorium_breeding_ratio)  # ~14-20 years
+        fuel_doubling_years = np.log(2) / np.log(thorium_breeding_ratio)
         cumulative_fuel_t = thorium_mass_t * (1 + thorium_breeding_ratio) ** (mission_years / fuel_doubling_years)
         if cumulative_fuel_t > thorium_mass_t:
             year_self_sufficient = min(year_self_sufficient, mission_years // fuel_doubling_years)
@@ -107,10 +113,16 @@ def dyson_scalability(eta_target,
         total_antimatter_mass_t = N_probes[-1] * antimatter_mass_mg_per_probe / 1e6
         total_mass_t += total_antimatter_mass_t
 
-    # Hybrid solar-fusion power
-    solar_power_kw = (S0 * A_shade_m2 / 1e3) * (1 / (au_distance**2))  # kW per occulter
-    total_power_kw = (fusion_power_kw + solar_power_kw) * hybrid_power_factor
+    # Hybrid solar-fusion power (fusion dominates >5 AU where irradiance <50 W/m²)
+    solar_irradiance_w_m2 = S0 / (au_distance ** 2)
+    solar_power_kw = (solar_irradiance_w_m2 * A_shade_m2 / 1e3) if solar_irradiance_w_m2 > 50 else 0
+    fusion_dominance_factor = 1.0 if au_distance <= 5.0 else (au_distance - 5.0) / 5.0 if au_distance <= 10.0 else 1.0
+    total_power_kw = (fusion_power_kw * fusion_dominance_factor) + solar_power_kw
     power_per_occulter_kw = total_power_kw / N_occulter if N_occulter > 0 else 0
+
+    # L1 halo orbit thrust (fusion-based)
+    total_fuel_mass_t = sum(fusion_thrust(mass_per_occulter_kg, l1_halo_delta_v_mps) * N_occulter / 1e6)
+    total_mass_t += total_fuel_mass_t
 
     power_blocked_TW = eta_target * S0 * A_earth_cross_section / 1e12
 
@@ -137,8 +149,9 @@ def dyson_scalability(eta_target,
         "antimatter_mass_t": total_antimatter_mass_t,
         "fusion_power_kw": fusion_power_kw,
         "solar_power_kw": solar_power_kw,
-        "hybrid_power_factor": hybrid_power_factor,
+        "hybrid_power_factor": fusion_dominance_factor,
         "power_per_occulter_kw": power_per_occulter_kw,
+        "l1_halo_fuel_mass_t": total_fuel_mass_t,
     }
 
 # =============================================================================
@@ -149,13 +162,15 @@ if __name__ == "__main__":
         0.018, 0.10, 0.30, 0.50, 0.99, 1.00,
     ]
 
-    print("DYSON-SCALE OCCLUDER / SUNSHADE SCALABILITY (Updated 2025 w/ VN, LFTR, AM, Fusion)\n")
+    print("DYSON-SCALE OCCLUDER / SUNSHADE SCALABILITY (Updated 2025 w/ Hybrid Fusion, L1 Thrust)\n")
     print(f"{'eta':>6} {'Occluders':>14} {'Mass [Gt]':>10} {'Launches':>12} {'Yrs Const':>9} "
           f"{'Yrs Exp20%':>10} {'Yrs Self50%':>11} {'Power[TW]':>10} {'Extra Occ':>12} "
-          f"{'LFTR Pwr [MW]':>13} {'Prop Sav [t]':>12} {'Fusion Pwr [kW]':>13} {'AM Mass [t]':>12}")
-    print("-" * 150)
+          f"{'LFTR Pwr [MW]':>13} {'Prop Sav [t]':>12} {'Fusion Pwr [kW]':>13} {'AM Mass [t]':>12} "
+          f"{'L1 Fuel [t]':>11}")
+    print("-" * 170)
 
     for eta in targets:
+        au_dist = 1.0 if eta <= 0.5 else 10.0  # Inner swarm at 1 AU, outer at 10 AU
         res = dyson_scalability(eta,
                                 A_shade_m2=1e6,
                                 areal_density_kgpm2=0.0005,  # optimistic 0.5 g/m²
@@ -163,21 +178,4 @@ if __name__ == "__main__":
                                 flights_per_year=20,
                                 launch_cadence_growth_rate=0.20,
                                 factory_production_t_per_year_initial=1e5,
-                                factory_growth_rate=0.50,
-                                von_neumann_enabled=True,
-                                lftr_enabled=True,
-                                antimatter_enabled=True,
-                                au_distance=1.0 if eta <= 0.5 else 10.0)  # 10 AU for outer swarm
-        print(f"{eta:6.3f} "
-              f"{res['N_occulter']/1e6:8.2f}M "
-              f"{res['total_mass_t']/1e9:7.2f} "
-              f"{res['launches_required']/1e6:6.1f}M "
-              f"{res['years_constant_cadence']:6.0f}y "
-              f"{res['years_exponential_launches_20pct']:6.0f}y "
-              f"{'∞' if np.isinf(res['years_self_replicating_50pct']) else res['years_self_replicating_50pct']:6.0f}y "
-              f"{res['power_blocked_TW']:8.0f} "
-              f"{res['extra_occulters_from_vn']/1e6:9.2f}M "
-              f"{res['lftr_power_kw']/1000:9.2f} "
-              f"{res['propellant_savings_t']:9.2f} "
-              f"{res['fusion_power_kw']:9.2f} "
-              f"{res['antimatter_mass_t']:9.2f}")
+​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
