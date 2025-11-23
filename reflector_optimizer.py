@@ -35,16 +35,24 @@ def hybrid_power(au_distance,
                  solar_area_m2=1e6,
                  solar_eff=0.20,
                  fusion_base_kw=50.0,
-                 beamed_microwave_kw=0.0):
+                 beamed_microwave_kw=0.0,
+                 travel_time_yr=None,
+                 fuel_decay_per_year=0.008):
     """
-    Deep-space hybrid power model (per occulter or per km²).
+    Deep-space hybrid power model with optional fuel degradation over time.
     - Solar: 1/au² scaling
-    - Fusion + beamed microwave: constant floor
-    Returns total available power in kW
+    - Fusion + beamed: constant floor, with time-based exponential decay if travel_time_yr provided
+    Returns kW per occulter (or per km²)
     """
     S0 = 1362.0  # 2025 solar constant at 1 AU [W/m²]
     solar_kw = (S0 / (au_distance ** 2)) * solar_area_m2 * solar_eff / 1000.0
-    floor_kw = fusion_base_kw + beamed_microwave_kw
+
+    fusion_available_kw = fusion_base_kw
+    if travel_time_yr is not None:
+        surviving_fraction = np.exp(-fuel_decay_per_year * travel_time_yr)
+        fusion_available_kw *= surviving_fraction
+
+    floor_kw = fusion_available_kw + beamed_microwave_kw
     return max(solar_kw, floor_kw)
 
 def optimize_reflector_bruteforce(R_target,
@@ -53,7 +61,9 @@ def optimize_reflector_bruteforce(R_target,
                                   power_opt=None,
                                   au_distance=1.0,
                                   fusion_kw=50.0,
-                                  beamed_kw=0.0):
+                                  beamed_kw=0.0,
+                                  travel_time_yr=None,
+                                  fuel_decay_per_year=0.008):
     """
     Exact combinatorial optimizer with power system integration.
     """
@@ -82,10 +92,13 @@ def optimize_reflector_bruteforce(R_target,
                     "selected_layers": [(r, m) for r, m in zip(reflectivities, masses)],
                     "power_option": power_opt.type if power_opt else None,
                     "au_distance": au_distance,
+                    "travel_time_yr": travel_time_yr,
                     "available_power_kw": hybrid_power(au_distance,
                                                        solar_area_m2=1e6,
                                                        fusion_base_kw=fusion_kw,
-                                                       beamed_microwave_kw=beamed_kw)
+                                                       beamed_microwave_kw=beamed_kw,
+                                                       travel_time_yr=travel_time_yr,
+                                                       fuel_decay_per_year=fuel_decay_per_year)
                 }
 
     return best_solution
@@ -95,7 +108,9 @@ def optimize_reflector_greedy(R_target,
                               power_opt=None,
                               au_distance=1.0,
                               fusion_kw=50.0,
-                              beamed_kw=0.0):
+                              beamed_kw=0.0,
+                              travel_time_yr=None,
+                              fuel_decay_per_year=0.008):
     """
     Fast greedy heuristic with power system support.
     """
@@ -139,10 +154,13 @@ def optimize_reflector_greedy(R_target,
             "method": "greedy",
             "power_option": power_opt.type if power_opt else None,
             "au_distance": au_distance,
+            "travel_time_yr": travel_time_yr,
             "available_power_kw": hybrid_power(au_distance,
                                                solar_area_m2=1e6,
                                                fusion_base_kw=fusion_kw,
-                                               beamed_microwave_kw=beamed_kw)
+                                               beamed_microwave_kw=beamed_kw,
+                                               travel_time_yr=travel_time_yr,
+                                               fuel_decay_per_year=fuel_decay_per_year)
         }
     return None
 
@@ -167,13 +185,14 @@ if __name__ == "__main__":
     print("=" * 80)
 
     for R_t in targets:
-        for au in [1.0, 5.0, 10.0]:
-            print(f"\nTarget R ≥ {R_t:.3f} | AU = {au:4.1f} | Power = {hybrid_power(au, fusion_base_kw=100):.0f} kW/km²")
+        for au, time_yr in [(1.0, 1.0), (5.0, 5.0), (10.0, 10.0), (100.0, 100.0)]:
+            print(f"\nTarget R ≥ {R_t:.3f} | AU = {au:4.1f} | Travel = {time_yr:.1f} yr | Power = {hybrid_power(au, travel_time_yr=time_yr):.0f} kW/km²")
             sol = optimize_reflector_bruteforce(R_t, candidates,
                                                 power_opt=power_opt,
                                                 au_distance=au,
                                                 fusion_kw=100,
-                                                beamed_kw=900 if au >= 10 else 0)
+                                                beamed_kw=900 if au >= 10 else 0,
+                                                travel_time_yr=time_yr)
 
             if sol:
                 print(f"   Mass (optimized) : {sol['total_areal_mass_kg_m2']*1000:6.3f} g/m²")
@@ -186,3 +205,4 @@ if __name__ == "__main__":
                 print()
             else:
                 print("   → Impossible with current tech")
+```​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
