@@ -3,51 +3,73 @@ from itertools import combinations
 
 # =============================================================================
 # Multi-Layer Reflector Mass Optimizer
-# Updated 2025: Adds p-B11 fusion power option for 5-10% mass reduction
+# Updated 2025: p-B11 fusion mass reduction + deep-space hybrid power model
 # Engineering-level trade tool – finds minimum areal mass to achieve target reflectivity
 # Physics are approximate; intended for system comparison only
 # =============================================================================
 
 def combined_reflectivity(layer_reflectivities):
     """
-    Multi-layer reflectivity model (non-coherent, statistical approximation).
-    Each layer reflects fraction r_i of incident light that reaches it.
-    Total reflectivity R = 1 - product_over_layers (1 - r_i)
+    Non-coherent multi-layer reflectivity model.
+    R_total = 1 - Π(1 - r_i)  → exact for thin, non-interfering films
     """
     r = np.asarray(layer_reflectivities, dtype=float)
     if len(r) == 0:
         return 0.0
-    transmitted_fraction = np.prod(1.0 - r)
-    return 1.0 - transmitted_fraction
+    return 1.0 - np.prod(1.0 - r)
 
 class PowerOption:
+    """
+    Onboard power system that reduces structural/shielding mass.
+    Default: p-B11 aneutronic fusion → ~7.5% total mass reduction
+    """
     def __init__(self, type='p-B11', mass_reduction=0.075):
-        """Power option with mass reduction (e.g., 7.5% for p-B11 fusion)."""
         self.type = type
-        self.mass_reduction = mass_reduction  # 5-10% reduction, default 7.5%
+        self.mass_reduction = mass_reduction  # 0.05–0.10 typical
 
-    def optimize_mass(self, base_mass):
-        """Reduces base mass by mass_reduction factor."""
-        return base_mass * (1 - self.mass_reduction)
+    def optimize_mass(self, base_mass_kg_m2):
+        """Apply mass savings from reduced shielding, cooling, etc."""
+        return base_mass_kg_m2 * (1.0 - self.mass_reduction)
 
-def hybrid_power(au, solar_area_km2=1, fusion_kw=50, factor=0.7):
-    """Calculates hybrid power (solar + p-B11 fusion) in kW."""
-    solar = 1362 / au**2 * solar_area_km2 * 1e6 * 0.2  # W, 20% efficiency (updated S0 2025)
-    return (solar / 1000 + fusion_kw) * factor  # kW
+def hybrid_power(au_distance,
+                 solar_area_m2=1e6,
+                 solar_eff=0.20,
+                 fusion_base_kw=50.0,
+                 beamed_microwave_kw=0.0):
+    """
+    Deep-space hybrid power model (per occulter or per km²).
+    - Solar: 1/au² scaling
+    - Fusion + beamed microwave: constant floor
+    Returns total available power in kW
+    """
+    S0 = 1362.0  # 2025 solar constant at 1 AU [W/m²]
+    solar_kw = (S0 / (au_distance ** 2)) * solar_area_m2 * solar_eff / 1000.0
+    floor_kw = fusion_base_kw + beamed_microwave_kw
+    return max(solar_kw, floor_kw)
 
-def optimize_reflector_bruteforce(R_target, candidates, max_layers=None, power_opt=None):
-    """Brute-force/combinatorial optimizer with power option."""
+def optimize_reflector_bruteforce(R_target,
+                                  candidates,
+                                  max_layers=None,
+                                  power_opt=None,
+                                  au_distance=1.0,
+                                  fusion_kw=50.0,
+                                  beamed_kw=0.0):
+    """
+    Exact combinatorial optimizer with power system integration.
+    """
     n = len(candidates)
     best_mass = np.inf
     best_solution = None
 
-    for size in range(1, n + 1 if max_layers is None else min(max_layers, n) + 1):
-        for subset_idx in combinations(range(n), size):
-            rs = [candidates[i][0] for i in subset_idx]
-            ms = [candidates[i][1] for i in subset_idx]
-            R = combined_reflectivity(rs)
-            total_mass = sum(ms)
+    for size in range(1, (n + 1) if max_layers is None else min(max_layers + 1, n + 1)):
+        for subset in combinations(range(n), size):
+            reflectivities = [candidates[i][0] for i in subset]
+            masses = [candidates[i][1] for i in subset]
 
+            R = combined_reflectivity(reflectivities)
+            total_mass = sum(masses)
+
+            # Apply onboard power mass reduction
             if power_opt:
                 total_mass = power_opt.optimize_mass(total_mass)
 
@@ -57,29 +79,42 @@ def optimize_reflector_bruteforce(R_target, candidates, max_layers=None, power_o
                     "total_areal_mass_kg_m2": total_mass,
                     "achieved_reflectivity": R,
                     "layers_used": size,
-                    "selected_indices": subset_idx,
-                    "selected_layers": [(candidates[i][0], candidates[i][1]) for i in subset_idx],
-                    "power_option": power_opt.type if power_opt else None
+                    "selected_layers": [(r, m) for r, m in zip(reflectivities, masses)],
+                    "power_option": power_opt.type if power_opt else None,
+                    "au_distance": au_distance,
+                    "available_power_kw": hybrid_power(au_distance,
+                                                       solar_area_m2=1e6,
+                                                       fusion_base_kw=fusion_kw,
+                                                       beamed_microwave_kw=beamed_kw)
                 }
 
     return best_solution
 
-def optimize_reflector_greedy(R_target, candidates, steps=1000, power_opt=None):
-    """Fast greedy heuristic with power option."""
-    candidates = sorted(candidates, key=lambda x: x[0]/x[1] if x[1]>0 else np.inf, reverse=True)
+def optimize_reflector_greedy(R_target,
+                              candidates,
+                              power_opt=None,
+                              au_distance=1.0,
+                              fusion_kw=50.0,
+                              beamed_kw=0.0):
+    """
+    Fast greedy heuristic with power system support.
+    """
+    candidates = sorted(candidates,
+                        key=lambda x: x[0]/x[1] if x[1] > 0 else np.inf,
+                        reverse=True)
+
     selected = []
     current_R = 0.0
     current_mass = 0.0
 
     while current_R < R_target and candidates:
-        best_ratio = -1
+        best_ratio = -1.0
         best_idx = -1
+
         for i, (r, m) in enumerate(candidates):
-            if m <= 0:
-                continue
-            new_R = combined_reflectivity([r] + [s[0] for s in selected])
-            delta_R = new_R - current_R
-            ratio = delta_R / m
+            trial_R = combined_reflectivity([r] + [s[0] for s in selected])
+            delta_R = trial_R - current_R
+            ratio = delta_R / m if m > 0 else 0
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_idx = i
@@ -102,7 +137,12 @@ def optimize_reflector_greedy(R_target, candidates, steps=1000, power_opt=None):
             "layers_used": len(selected),
             "selected_layers": selected,
             "method": "greedy",
-            "power_option": power_opt.type if power_opt else None
+            "power_option": power_opt.type if power_opt else None,
+            "au_distance": au_distance,
+            "available_power_kw": hybrid_power(au_distance,
+                                               solar_area_m2=1e6,
+                                               fusion_base_kw=fusion_kw,
+                                               beamed_microwave_kw=beamed_kw)
         }
     return None
 
@@ -111,25 +151,38 @@ def optimize_reflector_greedy(R_target, candidates, steps=1000, power_opt=None):
 # =============================================================================
 if __name__ == "__main__":
     candidates = [
-        (0.91, 0.00015), (0.88, 0.00006), (0.12, 0.0008), (0.25, 0.0018),
-        (0.45, 0.0045), (0.05, 0.00003), (0.60, 0.012),
+        (0.91, 0.00015),   # 30 nm Al on polymer
+        (0.88, 0.00006),   # Ultra-thin Al
+        (0.12, 0.0008),    # Single dielectric
+        (0.25, 0.0018),    # 5-layer stack
+        (0.45, 0.0045),    # 15-layer V-coat
+        (0.05, 0.00003),   # Protective coating
+        (0.60, 0.012),     # Retroreflector film
     ]
-    targets = [0.90, 0.95, 0.98, 0.995]
-    power_opt = PowerOption()
 
-    print("Multi-Layer Reflector Optimization Results (Updated 2025 w/ p-B11 Fusion)\n")
-    print("="*70)
+    targets = [0.90, 0.95, 0.98, 0.995]
+    power_opt = PowerOption(type="p-B11", mass_reduction=0.075)
+
+    print("Multi-Layer Reflector Optimization (2025 Deep-Space Edition)\n")
+    print("=" * 80)
+
     for R_t in targets:
-        print(f"\nTarget reflectivity: {R_t:.3f}")
-        sol = optimize_reflector_bruteforce(R_t, candidates, power_opt=power_opt)
-        if sol:
-            print(f"   Min areal mass    : {sol['total_areal_mass_kg_m2']*1000:6.3f} g/m²")
-            print(f"   Achieved R        : {sol['achieved_reflectivity']:.5f}")
-            print(f"   Layers used       : {sol['layers_used']}")
-            print(f"   Power option      : {sol['power_option']}")
-            print("   Composition       :", end="")
-            for r, m in sol['selected_layers']:
-                print(f" ({r:.2f}, {m*1000:.1f}g)", end="")
-            print()
-        else:
-            print("   Impossible with available layers")
+        for au in [1.0, 5.0, 10.0]:
+            print(f"\nTarget R ≥ {R_t:.3f} | AU = {au:4.1f} | Power = {hybrid_power(au, fusion_base_kw=100):.0f} kW/km²")
+            sol = optimize_reflector_bruteforce(R_t, candidates,
+                                                power_opt=power_opt,
+                                                au_distance=au,
+                                                fusion_kw=100,
+                                                beamed_kw=900 if au >= 10 else 0)
+
+            if sol:
+                print(f"   Mass (optimized) : {sol['total_areal_mass_kg_m2']*1000:6.3f} g/m²")
+                print(f"   Achieved R       : {sol['achieved_reflectivity']:.5f}")
+                print(f"   Layers           : {sol['layers_used']}")
+                print(f"   Power system     : {sol['power_option']} ({sol['available_power_kw']:.0f} kW)")
+                print("   Stack            :", end="")
+                for r, m in sol['selected_layers']:
+                    print(f" ({r:.2f},{m*1000:4.1f}g)", end="")
+                print()
+            else:
+                print("   → Impossible with current tech")
